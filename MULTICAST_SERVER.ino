@@ -1,3 +1,4 @@
+#include <SPI.h>
 #include <SD.h>
 #include <STRING.h>
 #include <Ethernet3.h>
@@ -15,15 +16,20 @@ EthernetUDP udp;
 const int chipSelect = 4;
 File root;
 
+EthernetServer server(80);
+
 int scale;
 int chord;
 String dblFileName;
+int bpmTime = 1000;
 
 String linesDBL[100];
 int nLignes;
 int ligneActive=0;
+
+bool initialisation = true;
 /////////////////////////////////////////////////////////////////////////
-///////// RECUPERATION DE SCALE ET CHORD EN INT 
+///////// RECUPERATION DE SCALE ET CHORD EN INT (PAS FONCTIONNELLE)
 /////////////////////////////////////////////////////////////////////////
 
 void getLigneInt(String fileName, int nLigne) {
@@ -63,9 +69,14 @@ void getLigneInt(String fileName, int nLigne) {
   file.close(); // Fermer le fichier
 }
 
+
+
+
 /////////////////////////////////////////////////////////////////////////
 ///////// RECUPERATION nombre de lignes
 /////////////////////////////////////////////////////////////////////////
+
+
 
 int getLignesNumber(String fileName) {
   File file = SD.open(fileName); // Ouvre le fichier en lecture
@@ -120,13 +131,68 @@ String getLigneString(String fileName, int nLigne) {
 }
 
 
-void setup() {
- // Open serial communications and wait for port to open:
-  Serial.begin(9600);
-  // wait for Serial Monitor to connect. Needed for native USB port boards only:
-  while (!Serial);
+///// decoder la donnée de la variable POST
+String urlDecode(String input) {
+    String decoded = "";
+    char temp[3] = {0}; // Tampon pour stocker les caractères hexadécimaux
+    
+    for (unsigned int i = 0; i < input.length(); i++) {
+        if (input[i] == '+') {
+            decoded += ' '; // Les espaces sont encodés en +
+        } else if (input[i] == '%' && i + 2 < input.length()) {
+            temp[0] = input[i + 1];
+            temp[1] = input[i + 2];
+            decoded += (char) strtol(temp, NULL, 16); // Convertit %XX en caractère réel
+            i += 2;
+        } else {
+            decoded += input[i];
+        }
+    }
+    return decoded;
+}
 
-  Serial.print("Initializing SD card...");
+
+
+void getFileDbl(String filedbl){
+
+nLignes = getLignesNumber(filedbl);
+for(int i=0;i<nLignes;i++){
+  
+  String linetemp = getLigneString(filedbl, i);
+  linetemp.trim();
+
+  if (i==0){ ///ligne bpm => bpm=60
+      int pos = linetemp.indexOf('=');
+
+      if (pos != -1) { // Vérifier si "=" existe
+          String valueStr = linetemp.substring(pos + 1); 
+          bpmTime = valueStr.toInt(); // Convertir en entier
+          bpmTime = 120000/bpmTime;
+          Serial.println(bpmTime);
+      } else {
+          bpmTime = 1000;
+      }
+
+
+  } else { // lignes harmonie et dbl
+  linesDBL[i-1] = linetemp;
+  }
+
+  
+
+}
+
+nLignes--;// on doit compter les lignes d'harmonie et exclure la première ligne tempo ('bpm=120')
+
+
+}
+
+
+void setup() {
+  pinMode(8, INPUT);// PIN 8 -> 1-> webserver mode 0-> multicast mode 
+ 
+  Serial.begin(9600);
+  while (!Serial);
 
   if (!SD.begin(chipSelect)) {
     Serial.println("initialization failed. Things to check:");
@@ -155,24 +221,25 @@ void setup() {
     Serial.println("fichier ouvert !");
   }
 
-Serial.println(millis());
 
 
-nLignes = getLignesNumber(dblFileName);
 
-Serial.println(millis());
-
-for(int i=0;i<nLignes;i++){
-  String linetemp = getLigneString(dblFileName, i);
-  linetemp.trim();
-  linesDBL[i] = linetemp;
-
-  Serial.println(linetemp);
- 
-}
+  getFileDbl(dblFileName);
 
   Ethernet.begin(mac, ip);
-  Serial.begin(9600);
+  server.begin();//server web
+
+  /*
+  if (Ethernet.hardwareStatus() == EthernetNoHardware) {
+    Serial.println("Shield Ethernet non détecté");
+    while (true);
+  }
+  
+  if (Ethernet.linkStatus() == LinkOFF) {
+    Serial.println("Pas de connexion Ethernet détectée");
+  }
+  */
+
   // Initialisation UDP
   udp.beginMulticast(multicastIP, multicastPort);
   Serial.println("Émetteur prêt.");
@@ -182,20 +249,176 @@ for(int i=0;i<nLignes;i++){
 }
 
 void loop() {
-  String payload = getLigneString(dblFileName, ligneActive);//linesDBL[ligneActive];
-  Serial.println(payload);
+
+
+  // si le piN 8 est débranché on gère l'envoi du flux multicast 
+  if (digitalRead(8)==0){
+
+  if (initialisation==false){
+  Serial.println(digitalRead(8));
+  //String payload = getLigneString(dblFileName, ligneActive);//linesDBL[ligneActive];
+
+  String payload = linesDBL[ligneActive];
+  //Serial.println(payload);
   udp.beginPacket(multicastIP, multicastPort);
 
-  Serial.println(payload.length());
+  //Serial.println(payload.length());
   udp.write(payload.c_str(), payload.length());//print(payload);
   udp.endPacket();
 
-  delay(1000);
+  delay(bpmTime);
   ligneActive++;
 
-  if (ligneActive>=8){
+  if (ligneActive>=nLignes){
     ligneActive =0;
   }
+
+  } else {
+
+  // envoi de 4 paquets d'initialisation  
+  udp.beginPacket(multicastIP, multicastPort);
+  udp.write("init", 4);//print(payload);
+  udp.endPacket();
+  delay(bpmTime);
+
+  udp.beginPacket(multicastIP, multicastPort);
+  udp.write("init", 4);//print(payload);
+  udp.endPacket();
+  delay(bpmTime);
+
+  udp.beginPacket(multicastIP, multicastPort);
+  udp.write("init", 4);//print(payload);
+  udp.endPacket();
+  delay(bpmTime);
+
+  udp.beginPacket(multicastIP, multicastPort);
+  udp.write("init", 4);//print(payload);
+  udp.endPacket();
+  delay(bpmTime);
+
+
+  initialisation=false;
+  }
+
+
+
+} else {
+// si le piN 8 est branché on gère le serveur web 
+//======================================================
+/// utilisatyion server web 
+//======================================================
+    initialisation=true; // à la reconnexion on enverra 4 paquets vides 
+    ligneActive = 0;
+    EthernetClient client = server.available();
+    
+    if (client) {
+        Serial.println("Client connecté.");
+        String request = "";
+        bool isPost = false;
+        String postData = "";
+
+        while (client.available()) {
+            char c = client.read();
+            request += c;
+
+            // Détection de la méthode HTTP
+            if (request.indexOf("POST /write.htm") != -1) {
+                isPost = true;
+            }
+
+            // Fin des headers HTTP
+            if (request.endsWith("\r\n\r\n")) {
+                break;
+            }
+        }
+
+        // Gestion du POST : récupération des données
+        if (isPost) {
+            while (client.available()) {
+                char c = client.read();
+                postData += c;
+            }
+            
+            Serial.print("Données POST reçues : ");
+            Serial.println(postData);
+
+            // Extraction de la variable "Harmony"
+            String harmonyValue = "";
+            int index = postData.indexOf("Harmony=");
+            if (index != -1) {
+                harmonyValue = postData.substring(index + 8);
+                harmonyValue.trim();
+                harmonyValue.replace("+", " ");  // Remplace les "+" par des espaces
+                Serial.print("Valeur de Harmony : ");
+                Serial.println(urlDecode(harmonyValue));
+
+                if (SD.exists("/dbl.txt")) {
+                    SD.remove("/dbl.txt");
+                }
+
+                // Écriture dans le fichier dbl.txt
+                File file = SD.open("/dbl.txt", FILE_WRITE);
+                if (file) {
+                    file.print(urlDecode(harmonyValue));
+                    file.close();
+                    Serial.println("Fichier dbl.txt mis à jour !");
+                    getFileDbl("dbl.txt");
+                } else {
+                    Serial.println("Erreur lors de l'ouverture du fichier dbl.txt !");
+                }
+            }
+
+            // Réponse HTTP au client
+            client.println("HTTP/1.1 200 OK");
+            client.println("Content-Type: text/plain");
+            client.println("Connection: close");
+            client.println();
+            client.println("Données reçues !");
+        }
+        // Gestion des requêtes GET pour servir les fichiers depuis la carte SD
+        else {
+            String filename = "/index.htm"; // Fichier par défaut
+            if (request.indexOf("GET / ") != -1) {
+                filename = "/index.htm";
+            } else if (request.indexOf("GET /") != -1) {
+                int start = request.indexOf("GET /") + 5;
+                int end = request.indexOf(" ", start);
+                filename = "/" + request.substring(start, end);
+            }
+
+            Serial.print("Demande du fichier : ");
+            Serial.println(filename);
+
+            if (SD.exists(filename)) {
+                File file = SD.open(filename);
+                client.println("HTTP/1.1 200 OK");
+                client.println("Content-Type: text/html");
+                client.println("Connection: close");
+                client.println();
+                
+                while (file.available()) {
+                    client.write(file.read());
+                }
+                file.close();
+            } else {
+                client.println("HTTP/1.1 404 Not Found");
+                client.println("Content-Type: text/html");
+                client.println("Connection: close");
+                client.println();
+                client.println("<h1>404 - Fichier non trouvé</h1>");
+            }
+        }
+
+        delay(10);
+        client.stop();
+        Serial.println("Client déconnecté.");
+    }
+}
+
+
+
+
+
 }
 
 void printDirectory(File dir, int numTabs) {
